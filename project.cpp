@@ -12,6 +12,9 @@
 
 //POSSIBLE MESSAGES
 #define KILL_REQUEST 1
+#define WANT_REQUEST 2
+#define REQUEST_ACCEPT 3
+#define REQUEST_REJECT 4
 
 using namespace std;
 
@@ -37,7 +40,7 @@ struct message{
 
 //message my_message;
 int tid; //Id procesu
-int lamport_clock = -1; //zegar lamporta procesu
+int lamport_clock = 0; //zegar lamporta procesu
 
 //Sprawdz support MPI
 void check_thread_support(int provided){
@@ -62,7 +65,13 @@ void check_thread_support(int provided){
 }
 void sent(message *mes, int dest, int tag, bool is_brodecast = false){
     if(is_brodecast){
-        MPI_Bcast( &mes, sizeof(mes), MPI_BYTE,0,MPI_COMM_WORLD);
+        //MPI_Bcast( &mes, sizeof(mes), MPI_BYTE,0,MPI_COMM_WORLD);
+        for(int j=0;j<n;j++){
+            if(j != tid){
+            MPI_Send( mes, sizeof(request), MPI_BYTE,j,tag, MPI_COMM_WORLD);
+            }
+        }
+        
     }
 }
 request generate_request(int id){
@@ -97,12 +106,13 @@ void president_loop(){
             t = rand() % 10 + 10;
             my_message.poison = t;
 
-            printf("Jestem skrzatem %d. Wysyłam zlecenia w chwili %d\n", tid, lamport_clock);
+            
 
             sent(&my_message,0,KILL_REQUEST, true);
+            printf("Jestem skrzatem %d. Wysyłam zlecenia w chwili %d\n", tid, lamport_clock);
 
         }
-        MPI_Recv(&recv_message,sizeof(recv_message), MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+        MPI_Recv(&recv_message,sizeof(request), MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 
     }
 
@@ -111,13 +121,103 @@ void brownie_loop(){
     message recvd; // miejsce na otrzymywaną wiadomość;
     message sentt; // miejsce na wysyłaną wiadomość;
     MPI_Status status;
+    request requests[100];
+    request my_actual_request = NULL;
+    int y_req = 0;
+    int y_req_bool = false;
 
     while(true){
-        MPI_Recv(&recvd, sizeof(recvd), MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+        MPI_Recv(&recvd, sizeof(request), MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
         switch(recvd.type){
             case KILL_REQUEST:
                 lamport_clock = max(lamport_clock, recvd.lamport_clock)+1;
                 printf("Jestem skrzatem %d. Otrzymałem listę zleceń od burmistrza w chwili %d\n",tid,lamport_clock);
+
+
+                //Tutaj : Do zaimplementowania sekwencja wyboru zadania i oczekiwania na odpowiedzi
+                
+                
+                //Zapisuje dane o zleceniach agrafkach truciźnie lokalnie
+                z = recvd.num_rq;
+                a = recvd.a_gr;
+                t = recvd.poison;
+                MPI_Comm_size( MPI_COMM_WORLD, &n); //liczba wszystkich procesów
+                requests = recvd.request_1;
+
+                
+                //Wybieram zlecenie
+                while(my_actual_request==NULL){
+                int choice = rand()%(z+1);
+                my_actual_request = requests[choice];
+                requests[choice] = NULL;
+                }
+                
+
+                lamport_clock++;
+
+                printf("Jestem skrzatem %d i wybrałem zlecenie %d w chwili %d\n",tid,my_actual_request.id,lamport_clock);
+
+                //Wysyłam wiadomość WANT_REQUEST pozostałym skrzatom
+                
+                lamport_clock++;
+                sentt.type=WANT_REQUEST;
+                sentt.sender_id=tid;
+                sentt.num_rq=my_actual_request.id;
+                sentt.lamport_clock=lamport_clock;
+                sent(&sentt,0,WANT_REQUEST,true);
+                y_req = 0; //potwierdzenia że mogę wziąć dany request, wszyscy pozostali oprócz burmistrza muszą się zgodzić
+                
+                int temp_lamport = lamport_clock;
+                while(y_req < (n-1)){
+                //Odbieramy wiadomości zgody/niezgody bądź inne rządania
+
+                MPI_Recv(&recvd, sizeof(request), MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+                switch(recvd.type){
+                    case WANT_REQUEST:
+                        lamport_clock = max(lamport_clock,recvd.lamport_clock)+1;
+                        printf("Jestem skrzatem %d. Odebrałem od skrzata %d informację o chęci wzięcia zlecenia %d w chwili %d\n",tid,recvd.sender_id,recvd.num_rq,recvd.lamport_clock);
+                        if(recvd.num_rq != my_actual_request.id){
+                            requests[recvd.num_rq] = NULL;
+                            sentt.type = REQUEST_ACCEPT;
+                            sentt.lamport_clock = lamport_clock;
+                            sentt.num_rq = recvd.num_rq;
+                            sentt.sender_id = tid;
+                            sent(sentt,recvd.sender_id,REQUEST_ACCEPT,false);
+                        }
+                        else{
+                            if(temp_lamport<recvd.lamport_clock){
+                                //odsyłam rejecta
+                                sentt.type = REQUEST_REJECT;
+                                sentt.lamport_clock = lamport_clock;
+                                sentt.num_rq = recvd.num_rq;
+                                sentt.sender_id = tid;
+                                sent(sentt,recvd.sender_id,REQUEST_REJECT,false); 
+                                
+                            }
+                            else if (temp_lamport == recvd.lamport_clock)
+                            {
+                                if(tid < recvd.sender_id){
+                                    //odsyłam rejecta
+                                    sentt.type = REQUEST_REJECT;
+                                    sentt.lamport_clock = lamport_clock;
+                                    sentt.num_rq = recvd.num_rq;
+                                    sentt.sender_id = tid;
+                                    sent(sentt,recvd.sender_id,REQUEST_REJECT,false); 
+                                }
+                                else{
+                                    //odsyłam accepta zmieniam zlecenie
+                                }
+                            }
+                            else{
+                                //odsyłam accepta
+                            }
+                            
+                        }
+                }
+                }
+
+                
+
         }
     }
 
