@@ -15,6 +15,9 @@
 #define WANT_REQUEST 2
 #define REQUEST_ACCEPT 3
 #define REQUEST_REJECT 4
+#define WANT_A 5
+#define OK_A 5
+
 
 using namespace std;
 
@@ -68,10 +71,13 @@ void sent(message *mes, int dest, int tag, bool is_brodecast = false){
         //MPI_Bcast( &mes, sizeof(mes), MPI_BYTE,0,MPI_COMM_WORLD);
         for(int j=0;j<n;j++){
             if(j != tid){
-            MPI_Send( mes, sizeof(request), MPI_BYTE,j,tag, MPI_COMM_WORLD);
+            MPI_Send( mes, sizeof(message), MPI_BYTE,j,tag, MPI_COMM_WORLD);
             }
         }
         
+    }
+    else{
+        MPI_Send(mes, sizeof(message),MPI_BYTE,dest,tag,MPI_COMM_WORLD);
     }
 }
 request generate_request(int id){
@@ -112,7 +118,7 @@ void president_loop(){
             printf("Jestem skrzatem %d. Wysyłam zlecenia w chwili %d\n", tid, lamport_clock);
 
         }
-        MPI_Recv(&recv_message,sizeof(request), MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+        MPI_Recv(&recv_message,sizeof(message), MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 
     }
 
@@ -122,12 +128,13 @@ void brownie_loop(){
     message sentt; // miejsce na wysyłaną wiadomość;
     MPI_Status status;
     request requests[100];
-    request my_actual_request = NULL;
+    request my_actual_request;
     int y_req = 0;
     int y_req_bool = false;
-
+    my_actual_request.id = -1;
+    srand(tid);
     while(true){
-        MPI_Recv(&recvd, sizeof(request), MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+        MPI_Recv(&recvd, sizeof(message), MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
         switch(recvd.type){
             case KILL_REQUEST:
                 lamport_clock = max(lamport_clock, recvd.lamport_clock)+1;
@@ -142,15 +149,15 @@ void brownie_loop(){
                 a = recvd.a_gr;
                 t = recvd.poison;
                 MPI_Comm_size( MPI_COMM_WORLD, &n); //liczba wszystkich procesów
-                requests = recvd.request_1;
+                copy(begin(recvd.request_1),end(recvd.request_1),begin(requests));
 
                 
                 //Wybieram zlecenie
-                while(my_actual_request==NULL){
+                
                 int choice = rand()%(z+1);
                 my_actual_request = requests[choice];
-                requests[choice] = NULL;
-                }
+                requests[choice].id = -1;
+                
                 
 
                 lamport_clock++;
@@ -168,53 +175,149 @@ void brownie_loop(){
                 y_req = 0; //potwierdzenia że mogę wziąć dany request, wszyscy pozostali oprócz burmistrza muszą się zgodzić
                 
                 int temp_lamport = lamport_clock;
-                while(y_req < (n-1)){
+                while((y_req < (n-2) and y_req_bool == false)){
                 //Odbieramy wiadomości zgody/niezgody bądź inne rządania
 
-                MPI_Recv(&recvd, sizeof(request), MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+                MPI_Recv(&recvd, sizeof(message), MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
                 switch(recvd.type){
                     case WANT_REQUEST:
                         lamport_clock = max(lamport_clock,recvd.lamport_clock)+1;
-                        printf("Jestem skrzatem %d. Odebrałem od skrzata %d informację o chęci wzięcia zlecenia %d w chwili %d\n",tid,recvd.sender_id,recvd.num_rq,recvd.lamport_clock);
+                        printf("Jestem skrzatem %d. Odebrałem od skrzata %d informację o chęci wzięcia zlecenia %d w chwili %d\n",tid,recvd.sender_id,recvd.num_rq,lamport_clock);
                         if(recvd.num_rq != my_actual_request.id){
-                            requests[recvd.num_rq] = NULL;
+                            lamport_clock++;
+                            requests[recvd.num_rq].id = -1;
                             sentt.type = REQUEST_ACCEPT;
                             sentt.lamport_clock = lamport_clock;
                             sentt.num_rq = recvd.num_rq;
                             sentt.sender_id = tid;
-                            sent(sentt,recvd.sender_id,REQUEST_ACCEPT,false);
+                            sent(&sentt,recvd.sender_id,REQUEST_ACCEPT,false);
                         }
                         else{
                             if(temp_lamport<recvd.lamport_clock){
                                 //odsyłam rejecta
+                                lamport_clock++;
                                 sentt.type = REQUEST_REJECT;
                                 sentt.lamport_clock = lamport_clock;
                                 sentt.num_rq = recvd.num_rq;
                                 sentt.sender_id = tid;
-                                sent(sentt,recvd.sender_id,REQUEST_REJECT,false); 
+                                sent(&sentt,recvd.sender_id,REQUEST_REJECT,false); 
                                 
                             }
                             else if (temp_lamport == recvd.lamport_clock)
                             {
                                 if(tid < recvd.sender_id){
                                     //odsyłam rejecta
+                                    lamport_clock++;
                                     sentt.type = REQUEST_REJECT;
                                     sentt.lamport_clock = lamport_clock;
                                     sentt.num_rq = recvd.num_rq;
                                     sentt.sender_id = tid;
-                                    sent(sentt,recvd.sender_id,REQUEST_REJECT,false); 
+                                    sent(&sentt,recvd.sender_id,REQUEST_REJECT,false); 
                                 }
                                 else{
-                                    //odsyłam accepta zmieniam zlecenie
+                                    lamport_clock++;
+                                    sentt.type = REQUEST_ACCEPT;
+                                    sentt.lamport_clock = lamport_clock;
+                                    sentt.num_rq = recvd.num_rq;
+                                    sentt.sender_id = tid;
+                                    sent(&sentt,recvd.sender_id,REQUEST_ACCEPT,false);
+
+                                    
+                                    //odsyłam accepta -> zmieniam zlecenie ->zmieniam zegar -> jeżeli brak zleceń to sie wycofuje
+
+                                    //
+                                    y_req = 0;
+                                    my_actual_request.id = -1;
+                                    for(int i=0; i<z; i++){
+                                        if(requests[i].id != -1){
+                                            my_actual_request = requests[i];
+                                            break;
+                                        }
+                                    }
+                                    if(my_actual_request.id = -1){
+                                        y_req_bool = true;
+                                    }
+                                    else{
+                                        lamport_clock++;
+                                        printf("Jestem procesem %d. Pobrałem nowe zadanie %d w chwili %d",tid,my_actual_request.id,lamport_clock);
+                                        lamport_clock++;
+                                        temp_lamport = lamport_clock;
+                                        sentt.lamport_clock = lamport_clock;
+                                        sentt.num_rq = my_actual_request.id;
+                                        sentt.sender_id = tid;
+                                        sentt.type = WANT_REQUEST;
+                                        sent(&sentt,recvd.sender_id,WANT_REQUEST,true);
+
+                                    }
+
+
                                 }
                             }
                             else{
-                                //odsyłam accepta
+                                    lamport_clock++;
+                                    sentt.type = REQUEST_ACCEPT;
+                                    sentt.lamport_clock = lamport_clock;
+                                    sentt.num_rq = recvd.num_rq;
+                                    sentt.sender_id = tid;
+                                    sent(&sentt,recvd.sender_id,REQUEST_ACCEPT,false);
+                                //odsyłam accepta -> zmieniam zlecenie -> zmieniam zegar -> jeżeli brak zleceń to się wycofuje
+                                y_req = 0;
+                                    my_actual_request.id = -1;
+                                    for(int i=0; i<z; i++){
+                                        if(requests[i].id != -1){
+                                            my_actual_request = requests[i];
+                                            break;
+                                        }
+                                    }
+                                    if(my_actual_request.id = -1){
+                                        y_req_bool = true;
+                                    }
+                                    else{
+                                        lamport_clock++;
+                                        printf("Jestem procesem %d. Pobrałem nowe zadanie %d w chwili %d",tid,my_actual_request.id,lamport_clock);
+                                        lamport_clock++;
+                                        temp_lamport = lamport_clock;
+                                        sentt.lamport_clock = lamport_clock;
+                                        sentt.num_rq = my_actual_request.id;
+                                        sentt.sender_id = tid;
+                                        sentt.type = WANT_REQUEST;
+                                        sent(&sentt,recvd.sender_id,WANT_REQUEST,true);
+
+                                    }
                             }
                             
                         }
+                        break;
+                    case REQUEST_ACCEPT:
+                        //odbieram request + potwierdzam ze otrzymałem zgodę
+                        lamport_clock = max(lamport_clock,recvd.lamport_clock)+1;
+                        y_req++;
+                        printf("Jestem skrzatem %d. Dostałem zgodę od skrzata %d na wykonanie zlecenia %d w chwili %d\n",tid,recvd.sender_id, recvd.num_rq, lamport_clock);
+                        break;
+                    case REQUEST_REJECT:
+                        //odbieram request + aktualizuje zegar + zmieniam zlecenie + jeżeli brak zleceń to wracam do czekania na KILL_REQUEST
+                        lamport_clock = max(lamport_clock,recvd.lamport_clock)+1;
+                        printf("Jestem skrzatem %d. Dostałem odmowę od skrzata %d na wykonanie zlecenia %d w chwili %d\n",tid,recvd.sender_id, recvd.num_rq, lamport_clock);
+                        break;
+
                 }
                 }
+                if(y_req_bool==false){
+                    //jeżeli mamy zgody to działamy po agrafkę w innym wypadku wyskakujemy i czekamy na nowe zlecenia
+                    temp_lamport = lamport_clock;
+                    lamport_clock++;
+                    sentt.lamport_clock = lamport_clock;
+                    sentt.sender_id=tid;
+                    sentt.type=WANT_A;
+                    sent(&sentt,tid,WANT_A,true);
+                    int want_a_counter = 0;
+                    while(want_a_counter < n-1-a){
+
+                    }
+                    
+
+                }
+
 
                 
 
