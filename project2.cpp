@@ -22,13 +22,16 @@ using namespace std;
 
 
 int n; //liczba skrzatów - procesy utworzone
-int z = 3; //liczba zleceń
-int a = 2; //liczba agrafek
-int t = 1; //liczba trucizn
+int z; //liczba zleceń
+int a; //liczba agrafek
+int t; //liczba trucizn
 
 int real_status = 0; 
 
-
+struct request{
+    int id;
+    int hamsters;
+};
 
 struct message{
     int type;
@@ -38,6 +41,7 @@ struct message{
     int a_gr;
     int num_rq;
     int poison;
+    request requests[3];
 };
 
 
@@ -89,21 +93,20 @@ void brownie_loop(){
     int agr_acc = 0;
     int toxic_acc = 0;
     int rq_not = 0;
-    //rozpiska statusów
-    // 0 - czekam na zlecenia
-    // 1 - czekam na agrafke
-    // 2 - czekam na trucizne
+    
     bool send_request = false;
 
     
     vector<pair<int,int>> not_give_a;
     vector<pair<int,int>> not_give_p;
     
-    vector<message> want_requests;
-    
-    //vector<int> not_give_q;
+    request received_requests[3];
 
-    int get_requests = 0; //chwila odebrania requestu
+    request my_request;
+    
+    vector<message> want_requests;
+
+    int get_requests = 0; 
     
     int temporary_lamport = 0;
     
@@ -111,13 +114,17 @@ void brownie_loop(){
 
     vector<message> matching;
 
+    vector<message> temporary_vec;
+    int free_poison = 0; //trucizna ze zwolnionych zleceń przed moim zleceniem w kolejce
+    int after_me = 0; //trucizna ze zleceń za mną
+
+
     printf("CLOCK: %d PROCES:%d - Oczekuje na zlecenia\n",lamport_clock, tid);
 
 
     while(true){
         MPI_Recv(&receive,sizeof(message),MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
         lamport_clock = max(lamport_clock, receive.lamport_clock)+1;
-        //printf("CLOCK: %d PROCES: %d OTRZYMAL: %d\n",lamport_clock,tid,receive.type);
         switch (receive.type)
         {
         case KILL_REQUEST:
@@ -125,11 +132,15 @@ void brownie_loop(){
             a = receive.a_gr;
             z = receive.num_rq;
             t = receive.poison;
+            copy(begin(receive.requests),end(receive.requests),begin(received_requests));
 
             rq_acc = 0;
             agr_acc = 0;
             toxic_acc = 0;
             rq_not = 0;
+            after_me = 0;
+                        
+            free_poison = 0;
 
             get_requests = receive.lamport_clock;
 
@@ -151,6 +162,7 @@ void brownie_loop(){
                     matching.push_back(i);
                 }
             }
+            //printf("Moment odebrania KILL_REQUESTU :%d PROCES:%d\n",get_requests,tid);
             if(matching.size() == n-2){
                 int pass = 0;
                 for(auto &j:matching){
@@ -166,7 +178,8 @@ void brownie_loop(){
                 }
                 matching.clear();
                 if(pass > n - 2 - z){
-                    printf("CLOCK: %d PROCES:%d - Otrzymałem zadanie. Oczekuje na agrafkę\n",lamport_clock, tid);
+                    my_request = received_requests[n-2-pass];
+                    printf("CLOCK: %d PROCES:%d ZADANIE:%d - Otrzymałem zadanie. Oczekuje na agrafkę\n",lamport_clock, tid, my_request.id);
                     lamport_clock++;
 
                     real_status = 1;
@@ -176,6 +189,17 @@ void brownie_loop(){
                     send.sender_id = tid;
                     
                     sent(&send,0,WANT_A,true);
+                    
+                    temporary_vec.clear();
+                    //usuwam z vektora want_requests to co było w matching
+                    for(auto &i:want_requests){
+                        if(i.lamport_ack != get_requests){
+                        temporary_vec.push_back(i);
+                        }
+                    }
+                    want_requests.clear();
+                    want_requests = temporary_vec;
+                    temporary_vec.clear();
 
 
 
@@ -202,9 +226,11 @@ void brownie_loop(){
                     matching.push_back(i);
                 }
             }
+            //printf("Moment odebrania KILL_REQUESTU :%d PROCES:%d\n",get_requests,tid);
             if(matching.size() == n-2){
                 int pass = 0;
                 for(auto &j:matching){
+                    
                     if(j.lamport_clock > got_requests){
                         pass++;
                     }
@@ -215,9 +241,10 @@ void brownie_loop(){
                     }
 
                 }
-                matching.clear();
+                //matching.clear();
                 if(pass > n - 2 - z){
-                    printf("CLOCK: %d PROCES:%d - Otrzymałem zadanie. Oczekuje na agrafkę\n",lamport_clock, tid);
+                    my_request = received_requests[n-2-pass];
+                    printf("CLOCK: %d PROCES:%d ZADANIE:%d - Otrzymałem zadanie. Oczekuje na agrafkę\n",lamport_clock, tid, my_request.id);
                     lamport_clock++;
 
                     real_status = 1;
@@ -229,6 +256,19 @@ void brownie_loop(){
                     
                     sent(&send,0,WANT_A,true);
 
+                    temporary_vec.clear();
+                    //usuwam z vektora want_requests to co było w matching
+                    for(auto &i:want_requests){
+                        if(i.lamport_ack != get_requests){
+                        temporary_vec.push_back(i);
+                        }
+                    }
+                    want_requests.clear();
+                    want_requests = temporary_vec;
+                    temporary_vec.clear();
+            }
+                    
+
 
 
 
@@ -236,7 +276,7 @@ void brownie_loop(){
                 }
             }
             matching.clear();
-            }
+            
             break;
         case WANT_A:
             if(real_status == 1){
@@ -297,67 +337,63 @@ void brownie_loop(){
                 if(agr_acc > n - 2 - a){
                     printf("CLOCK: %d PROCES:%d - Otrzymałem agrafkę. Oczekuje na truciznę\n",lamport_clock, tid);
                     real_status = 2;
-
-                    agr_acc = 0;
-
                     lamport_clock++;
-                    temporary_lamport = lamport_clock;
 
-                    send.type = WANT_POISON;
-                    send.sender_id = tid;
-                    send.lamport_clock = lamport_clock;
+                    //sprawdzam czy do tej pory bylo dosc zwolnionej trucizny i ustawiam to co za mną
 
-                    sent(&send,0,WANT_POISON,true);
+                    for(int i = 0; i < z; i++){
+                        after_me+=received_requests[i].hamsters;
+                        if(received_requests[i].id == my_request.id) break;
+                    }
+                    if(after_me - free_poison <= t){
+                        printf("CLOCK: %d PROCES:%d - Otrzymałem truciznę. Wykonuję zadanie\n",lamport_clock, tid);
+                        sleep(1);
+
+                        lamport_clock++;
+
+                        printf("CLOCK: %d PROCES:%d - Wykonałem zlecenie.\n",lamport_clock, tid);
+
+                        real_status = 0;
+                    
+                        toxic_acc = 0;
+
+                        agr_acc = 0;
+
+                        rq_acc = 0;
+
+                        after_me = 0;
+                        
+                        free_poison = 0;
+
+                        lamport_clock++;
+
+                        send.type = REQUEST_FINISHED;
+                        send.sender_id = tid;
+                        send.lamport_clock = lamport_clock;
+                        send.lamport_ack = get_requests;
+                        send.num_rq = my_request.id;
+
+                        sent(&send,0,REQUEST_FINISHED,true);
+
+                        lamport_clock++;
+                    
+                        for(auto &i:not_give_a){
+                            send.type = OK_A;
+                            send.sender_id = tid;
+                            send.lamport_clock = lamport_clock;
+                            send.lamport_ack = i.second;
+
+                        sent(&send,i.first,OK_A,false);
+                        }
+                        not_give_a.clear();
+
+                    }
 
                 }
             }
             break;
         case WANT_POISON:
-            if(real_status == 2){
-                if(temporary_lamport > receive.lamport_clock){
-                    lamport_clock++;
-
-                    send.type = OK_POISON;
-                    send.sender_id = tid;
-                    send.lamport_clock = lamport_clock;
-                    send.lamport_ack = receive.lamport_clock;
-
-                    sent(&send,receive.sender_id,OK_POISON,false);
-                }
-                else if(temporary_lamport == receive.lamport_clock){
-                    if(tid < receive.sender_id){
-                        not_give_p.push_back(make_pair(receive.sender_id,receive.lamport_clock));
-
-
-                    }else{
-                        lamport_clock++;
-
-                        send.type = OK_POISON;
-                        send.sender_id = tid;
-                        send.lamport_clock = lamport_clock;
-                        send.lamport_ack = receive.lamport_clock;
-
-                        sent(&send,receive.sender_id,OK_POISON,false);
-
-                    }
-
-                }
-                else{
-                    not_give_p.push_back(make_pair(receive.sender_id,receive.lamport_clock));
-                }
-
-
-
-            }else{
-                lamport_clock++;
-                
-                send.type = OK_POISON;
-                send.sender_id = tid;
-                send.lamport_clock = lamport_clock;
-                send.lamport_ack = receive.lamport_clock;
-
-                sent(&send,receive.sender_id,OK_POISON,false);
-            }  
+            
             break;
         case OK_POISON:
             if(real_status == 2 && temporary_lamport == receive.lamport_ack){
@@ -365,9 +401,11 @@ void brownie_loop(){
                 if(toxic_acc > n - 2 - t){
                     printf("CLOCK: %d PROCES:%d - Otrzymałem truciznę. Wykonuję zadanie\n",lamport_clock, tid);
 
+                    sleep(1);
+
                     lamport_clock++;
 
-                    printf("CLOCK: %d PROCES:%d - Wykonałem zlecenie. Ustawiam się w kolejce po następne\n",lamport_clock, tid);
+                    printf("CLOCK: %d PROCES:%d - Wykonałem zlecenie.\n",lamport_clock, tid);
 
                     real_status = 0;
                     
@@ -384,6 +422,7 @@ void brownie_loop(){
                     send.type = REQUEST_FINISHED;
                     send.sender_id = tid;
                     send.lamport_clock = lamport_clock;
+                    
 
                     sent(&send,0,REQUEST_FINISHED,true);
 
@@ -415,33 +454,7 @@ void brownie_loop(){
 
 
 
-                    // if(z != 0){
-                    //     if(rq_acc > n - 2 - z){
-                    //     printf("CLOCK: %d PROCES:%d - Otrzymałem zlecenie. Oczekuje na agrafkę\n",lamport_clock, tid);
-                    //     real_status = 1;
-
-                    //     lamport_clock++;
-                    //     temporary_lamport = lamport_clock;
-
-                    //     send.type = WANT_A;
-                    //     send.sender_id = tid;
-                    //     send.lamport_clock = lamport_clock;
-
-                    //     sent(&send,0,WANT_A,true);
-
-                    //     }else{
-                    //         lamport_clock++;
-                    //         temporary_lamport = lamport_clock;
-
-                    //         send.type = WANT_REQUEST;
-                    //         send.sender_id = tid;
-                    //         send.lamport_clock = lamport_clock;
-
-                    //         sent(&send,0,WANT_REQUEST,true);
-                    //     }
-                        
-
-                    // }
+                    
 
                 }
 
@@ -449,7 +462,57 @@ void brownie_loop(){
             }
             break;
         case REQUEST_FINISHED:
-            //z--;
+            //printf("PROCES:%d REQUEST:%d\n",tid, receive.num_rq);
+            if(real_status != 0){
+                //printf("PROCES:%d REQUEST:%d\n",tid, receive.num_rq);
+                if(receive.num_rq < my_request.id){
+                    
+                    free_poison += received_requests[receive.num_rq].hamsters;
+                    
+                    if(real_status == 2 && after_me - free_poison <= t ){
+                        printf("CLOCK: %d PROCES:%d - Otrzymałem truciznę. Wykonuję zadanie\n",lamport_clock, tid);
+                        sleep(1);
+
+                        lamport_clock++;
+
+                        printf("CLOCK: %d PROCES:%d - Wykonałem zlecenie.\n",lamport_clock, tid);
+
+                        real_status = 0;
+                    
+                        toxic_acc = 0;
+
+                        agr_acc = 0;
+
+                        rq_acc = 0;
+
+                        after_me = 0;
+                        
+                        free_poison = 0;
+
+                        lamport_clock++;
+
+                        send.type = REQUEST_FINISHED;
+                        send.sender_id = tid;
+                        send.lamport_clock = lamport_clock;
+                        send.lamport_ack = get_requests;
+                        send.num_rq = my_request.id;
+
+                        sent(&send,0,REQUEST_FINISHED,true);
+
+                        lamport_clock++;
+                    
+                        for(auto &i:not_give_a){
+                            send.type = OK_A;
+                            send.sender_id = tid;
+                            send.lamport_clock = lamport_clock;
+                            send.lamport_ack = i.second;
+
+                        sent(&send,i.first,OK_A,false);
+                        }
+                        not_give_a.clear();
+                    }
+                }
+            }
             break;
         default:
             break;
@@ -464,18 +527,38 @@ void president_loop(){
     message send;
     message receive;
     MPI_Status status;
+    request created_requests[3];
+    request request_template;
+
     
 
     while(true){
         MPI_Comm_size( MPI_COMM_WORLD, &n);
         z = 3; //zlecenia utworzone
         a = 2;  //agrafki
-        t = 1;  //trucizny
+        t = 5;  //trucizny
         lamport_clock++;
+        //twórz zlecenia
+        request_template.id = 0;
+        request_template.hamsters = 1;
+        created_requests[0] = request_template;
+
+        request_template.id = 1;
+        request_template.hamsters = 2;
+        created_requests[1] = request_template;
+
+        request_template.id = 2;
+        request_template.hamsters = 3;
+        created_requests[2] = request_template;
+
+
+        //
         printf("CLOCK: %d PROCES:0 - Utworzyłem zlecenia\n",lamport_clock);
         lamport_clock++;
         
         finished_quests = 0;
+        copy(begin(created_requests),end(created_requests),begin(send.requests));
+        //send.requests = created_requests;
         send.a_gr = a;
         send.lamport_clock = lamport_clock;
         send.num_rq = z;
@@ -518,7 +601,7 @@ int main(int argc, char **argv){
 
     printf("Checking!\n");
     MPI_Comm_size( MPI_COMM_WORLD, &n); // liczba procesów = wszystkie skrzaty;
-    printf("%d",n);
+    //printf("%d",n);
     MPI_Comm_rank( MPI_COMM_WORLD, &tid); //mój id procesu
 
     //printf("Jestem skrzatem nr %d z %d\n",tid+1,n);
